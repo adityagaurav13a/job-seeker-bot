@@ -14,5 +14,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install python-telegram-bot
+      - run: pip install "python-telegram-bot[job-queue]"
       - run: python bot.py
 
