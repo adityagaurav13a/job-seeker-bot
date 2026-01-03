@@ -5,8 +5,11 @@ from telegram.ext import (
     ContextTypes
 
 )
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
+
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 
 # ========================
@@ -122,7 +125,7 @@ async def applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cursor.execute(
         "INSERT INTO applied_jobs VALUES (?, ?, ?, ?)",
-        (user_id, company, role, datetime.utcnow().isoformat())
+        (user_id, company, role, datetime.now(timezone.utc).isoformat())
     )
     conn.commit()
 
@@ -144,13 +147,16 @@ async def followups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 No follow-ups pending")
         return
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     msg = "🔔 FOLLOW-UP REMINDERS:\n\n"
     due = False
 
     for company, role, applied_at in rows:
         applied_time = datetime.fromisoformat(applied_at)
-        if now - applied_time >= timedelta(days=5):
+        if applied_time.tzinfo is None:
+            applied_time = applied_time.replace(tzinfo=timezone.utc)
+        # if now - applied_time >= timedelta(days=5):
+        if now - applied_time >= timedelta(minutes=1):
             due = True
             msg += f"📌 {company} – {role}\n➡ Send follow-up today\n\n"
 
@@ -177,9 +183,12 @@ async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
 
     for user_id, company, role, applied_at in rows:
         applied_time = datetime.fromisoformat(applied_at)
+        if applied_time.tzinfo is None:
+            applied_time = applied_time.replace(tzinfo=timezone.utc)
 
         # TEMP: 1 minute for testing (change to days=5 later)
-        if datetime.utcnow() - applied_time >= timedelta(days=5):
+        # if datetime.now(timezone.utc) - applied_time >= timedelta(days=5):
+        if datetime.now(timezone.utc) - applied_time >= timedelta(minutes=1):
             reminders.setdefault(user_id, []).append(
                 f"📌 Follow up: {company} – {role}"
             )
@@ -188,7 +197,64 @@ async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=user_id,
             text="🔔 Follow-up Reminder\n\n" + "\n".join(msgs)
+
         )
+
+async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
+    for user_id, skills in user_skills.items():
+        matches = match_jobs(skills)
+
+        if not matches:
+            continue
+
+        msg = "🔥 Daily Job Suggestions:\n\n"
+        for score, job in matches:
+            msg += (
+                f"✅ {job['title']} ({job['company']})\n"
+                f"🔗 {job['link']}\n\n"
+            )
+
+        await context.bot.send_message(chat_id=user_id, text=msg)
+
+async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
+    for user_id, skills in user_skills.items():
+        matches = match_jobs(skills)
+        if not matches:
+            continue
+
+        for score, job in matches:
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Apply", callback_data=f"apply|{job['company']}|{job['title']}"),
+                    InlineKeyboardButton("🔔 Follow up", callback_data=f"follow|{job['company']}|{job['title']}"),
+                    InlineKeyboardButton("❌ Ignore", callback_data=f"ignore|{job['company']}|{job['title']}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🔥 {job['title']} ({job['company']})\n🔗 {job['link']}",
+                reply_markup=reply_markup
+            )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action, company, role = query.data.split("|")
+
+    if action == "apply":
+        await query.edit_message_text(f"✅ Applied noted for {company} – {role}\nUse /applied {company} {role}")
+    elif action == "follow":
+        await query.edit_message_text(
+            f"📩 Follow-up template:\n\n"
+            f"Hi {{Name}},\nFollowing up on my application for {role} at {company}.\nThanks!"
+        )
+    else:
+        await query.edit_message_text("❌ Ignored")
+
+
 
 # ==========================
 # JOB MATCHING (SIMPLE)
@@ -244,15 +310,15 @@ def main():
     app.add_handler(CommandHandler("applied", applied))
     app.add_handler(CommandHandler("followups", followups))
     app.add_handler(CommandHandler("followupmsg", followupmsg))
-    
-    job_queue.run_daily(daily_followup, time=datetime.time(hour=9))
-    # job_queue.run_repeating(daily_followup, interval=60, first=10)
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-
-
+    # job_queue.run_daily(daily_followup, time=time(hour=9))
+    # job_queue.run_daily(daily_jobs, time=time(hour=9))
+    job_queue.run_repeating(daily_jobs, interval=30, first=15)
+    job_queue.run_repeating(daily_followup, interval=30, first=10)
 
     print("🤖 Job Seeker Bot is running...")
-    app.run_polling()
+    app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
     main()

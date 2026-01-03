@@ -1,8 +1,8 @@
-name: Job Reminder Bot
+name: Job Seeker Bot
 
 on:
   schedule:
-    - cron: "30 3 * * 1-5"  # 9 AM IST
+    - cron: "30 3 * * *"   # 9:00 AM IST
   workflow_dispatch:
 
 jobs:
@@ -10,10 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install python-telegram-bot
-      - run: pip install "python-telegram-bot[job-queue]"
-      - run: python bot.py
 
+      - name: Install dependencies
+        run: |
+          pip install "python-telegram-bot[job-queue]"
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          python bot.py
