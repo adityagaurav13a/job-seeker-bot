@@ -3,12 +3,18 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes
+
 )
+import os
 
 # ==========================
 # CONFIG
 # ==========================
-BOT_TOKEN = "7959091314:AAGpcBspfAs8vLVbdm7A5KNgYSiAjjIjRTg"
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
 
 # In-memory storage (simple, free)
 user_skills = {}
