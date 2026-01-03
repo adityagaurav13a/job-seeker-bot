@@ -155,8 +155,7 @@ async def followups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         applied_time = datetime.fromisoformat(applied_at)
         if applied_time.tzinfo is None:
             applied_time = applied_time.replace(tzinfo=timezone.utc)
-        # if now - applied_time >= timedelta(days=5):
-        if now - applied_time >= timedelta(minutes=1):
+        if now - applied_time >= timedelta(days=5):
             due = True
             msg += f"📌 {company} – {role}\n➡ Send follow-up today\n\n"
 
@@ -187,8 +186,7 @@ async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
             applied_time = applied_time.replace(tzinfo=timezone.utc)
 
         # TEMP: 1 minute for testing (change to days=5 later)
-        # if datetime.now(timezone.utc) - applied_time >= timedelta(days=5):
-        if datetime.now(timezone.utc) - applied_time >= timedelta(minutes=1):
+        if datetime.now(timezone.utc) - applied_time >= timedelta(days=5):
             reminders.setdefault(user_id, []).append(
                 f"📌 Follow up: {company} – {role}"
             )
@@ -312,12 +310,12 @@ def main():
     app.add_handler(CommandHandler("followupmsg", followupmsg))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # job_queue.run_daily(daily_followup, time=time(hour=9))
-    # job_queue.run_daily(daily_jobs, time=time(hour=9))
-    job_queue.run_repeating(daily_jobs, interval=30, first=15)
-    job_queue.run_repeating(daily_followup, interval=30, first=10)
+    app.job_queue.run_daily(daily_jobs, time=datetime.time(hour=9))
+    app.job_queue.run_daily(daily_followup, time=datetime.time(hour=9))
+    # job_queue.run_repeating(daily_jobs, interval=30, first=15)
+    # job_queue.run_repeating(daily_followup, interval=30, first=10)
 
-    print("🤖 Job Seeker Bot is running...")
+    print("🤖 Job Seeker Bot (PROD) running")
     app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":
