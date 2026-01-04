@@ -3,18 +3,14 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes
-
 )
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
 
 import os
 from datetime import datetime, timedelta, timezone, time
 import sqlite3
-import hashlib
 
 # ========================
-# Connecting to sqlite3 Db
+# applied_jobs table
 # ========================
 
 conn = sqlite3.connect("jobs.db", check_same_thread=False)
@@ -25,38 +21,54 @@ CREATE TABLE IF NOT EXISTS applied_jobs (
     user_id INTEGER,
     company TEXT,
     role TEXT,
-    applied_at TEXT
+    applied_at TEXT,
+    UNIQUE(user_id, company, role)
 )
 """)
+conn.commit()
+
+# ========================
+# DB MIGRATION (ONE-TIME SAFE)
+# ========================
+
+cursor.execute("PRAGMA table_info(applied_jobs)")
+columns = [c[1] for c in cursor.fetchall()]
+
+if "followup_after" not in columns:
+    cursor.execute(
+        "ALTER TABLE applied_jobs ADD COLUMN followup_after INTEGER DEFAULT 5"
+    )
+
+if "link" not in columns:
+    cursor.execute(
+        "ALTER TABLE applied_jobs ADD COLUMN link TEXT"
+    )
+
 conn.commit()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS user_skills (
     user_id INTEGER PRIMARY KEY,
-    skills TEXT
+    skills TEXT,
+    location TEXT DEFAULT 'india',
+    exp_min INTEGER DEFAULT 0,
+    exp_max INTEGER DEFAULT 30,
+    work_mode TEXT
 )
 """)
 conn.commit()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS sent_jobs (
-    user_id INTEGER,
-    job_id TEXT,
-    sent_at TEXT,
-    PRIMARY KEY (user_id, job_id)
-)
-""")
-conn.commit()
+# cursor.execute("""
+# ALTER TABLE user_skills
+# ADD COLUMN active INTEGER DEFAULT 1
+# """)
+# conn.commit()
+cursor.execute("PRAGMA table_info(user_skills)")
+columns = [c[1] for c in cursor.fetchall()]
+if "active" not in columns:
+    cursor.execute("ALTER TABLE user_skills ADD COLUMN active INTEGER DEFAULT 1")
+    conn.commit()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS job_actions (
-    user_id INTEGER,
-    job_id TEXT,
-    action TEXT,
-    action_at TEXT
-)
-""")
-conn.commit()
 
 # ==========================
 # CONFIG
@@ -72,12 +84,18 @@ if not BOT_TOKEN:
 # ==========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute("""
+        INSERT INTO user_skills (user_id, active)
+        VALUES (?, 1)
+        ON CONFLICT(user_id) DO UPDATE SET active = 1
+    """, (user_id,))
+    conn.commit()
+
     await update.message.reply_text(
-        "👋 Welcome to Job Seeker Bot\n\n"
-        "Commands:\n"
-        "/skills <your skills>\n"
-        "/remind\n"
-        "/hrmsg\n"
+        "✅ Job notifications enabled.\n"
+        "Use /skills to set your role."
     )
 
 async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,10 +106,11 @@ async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     cursor.execute(
-        "SELECT skills FROM user_skills WHERE user_id = ?",
+        "SELECT skills FROM user_skills WHERE user_id = ? AND active = 1",
         (user_id,)
     )
-    if cursor.fetchone():
+    row = cursor.fetchone()
+    if row and row[0]:
         await update.message.reply_text(
             "⚠️ Skills already set.\n"
             "Use /update_skill <new skills> to update."
@@ -100,7 +119,7 @@ async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     skills_text = " ".join(context.args)
     cursor.execute(
-        "INSERT INTO user_skills (user_id, skills) VALUES (?, ?)",
+        "INSERT INTO user_skills (user_id, skills, active) VALUES (?, ?, 1)",
         (user_id, skills_text)
     )
     conn.commit()
@@ -143,56 +162,80 @@ async def hrmsg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    cursor.execute(
-        "SELECT skills FROM user_skills WHERE user_id = ?",
-        (user_id,)
-    )
+    cursor.execute("""
+        SELECT skills, location, exp_min, exp_max, work_mode
+        FROM user_skills WHERE user_id = ?
+    """, (user_id,))
     row = cursor.fetchone()
 
     if not row:
         await update.message.reply_text("❌ Set skills first using /skills")
         return
 
-    matches = match_jobs(row[0])
-    if not matches:
-        await update.message.reply_text("❌ No matching jobs today")
-        return
-
-    for _, job in matches:
-        await update.message.reply_text(
-            f"🔥 {job['title']} ({job['company']})\n{job['link']}"
-        )
-
+    skills, location, exp_min, exp_max, work_mode = row
+    link = naukri_search_url(skills, location, exp_min, exp_max, work_mode)
+    await update.message.reply_text(f"🔍 Jobs for you:\n{link}")
 
 async def applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text(
-            "❌ Usage: /applied <Company> <Role>"
+            "❌ Usage:\n"
+            "/applied <Company> <Role> [days=7] [link=URL]"
         )
         return
 
     company = context.args[0]
-    role = " ".join(context.args[1:])
+    role_words = []
+    days = 5
+    link = None
+
+    for arg in context.args[1:]:
+        if arg.startswith("days="):
+            try:
+                days = int(arg.split("=", 1)[1])
+            except ValueError:
+                await update.message.reply_text("❌ days must be a number")
+                return
+        elif arg.startswith("link="):
+            link = arg.split("=", 1)[1]
+        else:
+            role_words.append(arg)
+
+    if not role_words:
+        await update.message.reply_text("❌ Role is required")
+        return
+
+    role = " ".join(role_words)
     user_id = update.effective_user.id
 
-    cursor.execute(
-        "INSERT INTO applied_jobs VALUES (?, ?, ?, ?)",
-        (user_id, company, role, datetime.now(timezone.utc).isoformat())
-    )
+    cursor.execute("""
+        INSERT INTO applied_jobs
+        (user_id, company, role, applied_at, followup_after, link)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        company,
+        role,
+        datetime.now(timezone.utc).isoformat(),
+        days,
+        link
+    ))
     conn.commit()
 
     await update.message.reply_text(
-        f"✅ Saved.\nI’ll remind you to follow up in 5 days for:\n"
-        f"{company} – {role}"
+        f"✅ Saved: {company} – {role}\n"
+        f"⏰ Follow-up in {days} day(s)"
+        + (f"\n🔗 {link}" if link else "")
     )
 
 async def followups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    cursor.execute(
-        "SELECT company, role, applied_at FROM applied_jobs WHERE user_id = ?",
-        (user_id,)
-    )
+    cursor.execute("""
+        SELECT company, role, applied_at, followup_after, link
+        FROM applied_jobs
+        WHERE user_id = ?
+    """, (user_id,))
     rows = cursor.fetchall()
 
     if not rows:
@@ -203,14 +246,19 @@ async def followups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = "🔔 FOLLOW-UP REMINDERS:\n\n"
     due = False
 
-    for company, role, applied_at in rows:
+    for company, role, applied_at, followup_after, link in rows:
         applied_time = datetime.fromisoformat(applied_at)
         if applied_time.tzinfo is None:
             applied_time = applied_time.replace(tzinfo=timezone.utc)
-        if now - applied_time >= timedelta(days=5):
-            due = True
-            msg += f"📌 {company} – {role}\n➡ Send follow-up today\n\n"
 
+        if now - applied_time >= timedelta(days=followup_after):
+            due = True
+            msg += (
+                f"📌 {company} – {role}\n"
+                f"➡ Follow-up now\n"
+                + (f"🔗 {link}\n" if link else "")
+                + "\n"
+            )
     if not due:
         msg = "✅ No follow-ups due today"
 
@@ -225,9 +273,12 @@ async def followupmsg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute(
-        "SELECT user_id, company, role, applied_at FROM applied_jobs"
-    )
+    cursor.execute("""
+        SELECT a.user_id, a.company, a.role, a.applied_at
+        FROM applied_jobs a
+        JOIN user_skills u ON a.user_id = u.user_id
+        WHERE u.active = 1
+    """)
     rows = cursor.fetchall()
 
     reminders = {}
@@ -250,108 +301,29 @@ async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
 
         )
 
-# async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
-#     cursor.execute("SELECT user_id, skills FROM user_skills")
-#     users = cursor.fetchall()
-
-#     for user_id, skills in users:
-#         matches = match_jobs(skills)
-#         if not matches:
-#             continue
-
-#         for _, job in matches:
-#             keyboard = [[
-#                 InlineKeyboardButton(
-#                     "✅ Apply",
-#                     callback_data=f"apply|{job['company']}|{job['title']}"
-#                 ),
-#                 InlineKeyboardButton(
-#                     "❌ Ignore",
-#                     callback_data="ignore"
-#                 )
-#             ]]
-
-#             await context.bot.send_message(
-#                 chat_id=user_id,
-#                 text=f"🔥 {job['title']} ({job['company']})\n🔗 {job['link']}",
-#                 reply_markup=InlineKeyboardMarkup(keyboard)
-#             )
-
 async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("SELECT user_id, skills FROM user_skills")
+    cursor.execute("""
+        SELECT user_id, skills, location, exp_min, exp_max, work_mode
+        FROM user_skills
+        WHERE active = 1
+    """)
     users = cursor.fetchall()
 
-    for user_id, skills in users:
-        matches = match_jobs(skills)
-        if not matches:
-            continue
+    for user_id, skills, location, exp_min, exp_max, work_mode in users:
+        link = naukri_search_url(skills, location, exp_min, exp_max, work_mode)
 
-        for _, job in matches:
-            job_id = get_job_id(job)
-
-            # Check if already sent
-            cursor.execute(
-                "SELECT 1 FROM sent_jobs WHERE user_id = ? AND job_id = ?",
-                (user_id, job_id)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🔥 New jobs matching your profile\n\n"
+                f"🔍 Role: {skills}\n"
+                f"📍 Location: {location}\n"
+                f"🧠 Experience: {exp_min}-{exp_max} yrs\n"
+                f"🏢 Mode: {work_mode or 'Any'}\n\n"
+                f"👉 {link}\n\n"
+                "Tip: Apply to 3–5 jobs today"
             )
-            if cursor.fetchone():
-                continue  # already sent → skip
-
-            keyboard = [[
-                InlineKeyboardButton(
-                    "✅ Apply",
-                    callback_data=f"apply|{job['company']}|{job['title']}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Ignore",
-                    callback_data="ignore"
-                )
-            ]]
-
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"🔥 {job['title']} ({job['company']})\n🔗 {job['link']}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-            # Mark as sent
-            cursor.execute(
-                "INSERT INTO sent_jobs VALUES (?, ?, ?)",
-                (user_id, job_id, datetime.now(timezone.utc).isoformat())
-            )
-            conn.commit()
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-
-    try:
-        await query.answer()
-    except Exception:
-        return
-
-    action, company, role = query.data.split("|")
-    user_id = query.from_user.id
-
-    job_id = get_job_id({
-        "company": company,
-        "title": role,
-        "link": ""
-    })
-
-    cursor.execute(
-        "INSERT INTO job_actions VALUES (?, ?, ?, ?)",
-        (user_id, job_id, action, datetime.now(timezone.utc).isoformat())
-    )
-    conn.commit()
-
-    if action == "apply":
-        await query.edit_message_text(f"✅ Applied noted for {company} – {role}")
-
-    elif action == "follow":
-        await query.edit_message_text(f"📩 Follow-up noted for {company} – {role}")
-
-    else:
-        await query.edit_message_text("❌ Ignored")
+        )
 
 async def update_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -371,78 +343,209 @@ async def update_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ Skills updated successfully")
 
-async def weekly_summary(context: ContextTypes.DEFAULT_TYPE):
-    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+# async def weekly_summary(context: ContextTypes.DEFAULT_TYPE):
+#     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+#     cursor.execute("""
+#         SELECT user_id, action, COUNT(*)
+#         FROM job_actions
+#         WHERE action_at >= ?
+#         GROUP BY user_id, action
+#     """, (one_week_ago.isoformat(),))
+
+#     rows = cursor.fetchall()
+
+#     summary = {}
+
+#     for user_id, action, count in rows:
+#         summary.setdefault(user_id, {"apply": 0, "follow": 0, "ignore": 0})
+#         summary[user_id][action] += count
+
+#     for user_id, data in summary.items():
+#         msg = (
+#             "📊 Weekly Job Summary\n\n"
+#             f"✅ Applied: {data['apply']}\n"
+#             f"🔔 Followed up: {data['follow']}\n"
+#             f"❌ Ignored: {data['ignore']}"
+#         )
+
+#         await context.bot.send_message(chat_id=user_id, text=msg)
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute(
+        "UPDATE user_skills SET active = 0 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+
+    await update.message.reply_text(
+        "⛔ Job notifications stopped.\n"
+        "Use /start again to resume."
+    )
+
+
+async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    prefs = {k: v for k, v in (
+        arg.split("=") for arg in context.args if "=" in arg
+    )}
+
+    location = prefs.get("location", "india").lower()
+    work_mode = prefs.get("mode")
+    exp = prefs.get("exp", "0-30")
+
+    try:
+        exp_min, exp_max = map(int, exp.split("-"))
+    except ValueError:
+        await update.message.reply_text("❌ exp must be like 4-6")
+        return
 
     cursor.execute("""
-        SELECT user_id, action, COUNT(*)
-        FROM job_actions
-        WHERE action_at >= ?
-        GROUP BY user_id, action
-    """, (one_week_ago.isoformat(),))
+        UPDATE user_skills
+        SET location=?, exp_min=?, exp_max=?, work_mode=?
+        WHERE user_id=?
+    """, (location, exp_min, exp_max, work_mode, user_id))
+    conn.commit()
 
-    rows = cursor.fetchall()
+    await update.message.reply_text(
+        f"✅ Preferences saved\n"
+        f"📍 Location: {location}\n"
+        f"🧠 Experience: {exp_min}-{exp_max}\n"
+        f"🏢 Mode: {work_mode or 'Any'}"
+    )
 
-    summary = {}
+async def remove_applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-    for user_id, action, count in rows:
-        summary.setdefault(user_id, {"apply": 0, "follow": 0, "ignore": 0})
-        summary[user_id][action] += count
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Usage:\n"
+            "/remove_applied <Company> <Role>\n"
+            "or\n"
+            "/remove_applied all"
+        )
+        return
 
-    for user_id, data in summary.items():
-        msg = (
-            "📊 Weekly Job Summary\n\n"
-            f"✅ Applied: {data['apply']}\n"
-            f"🔔 Followed up: {data['follow']}\n"
-            f"❌ Ignored: {data['ignore']}"
+    # Remove all
+    if context.args[0].lower() == "all":
+        cursor.execute(
+            "DELETE FROM applied_jobs WHERE user_id = ?",
+            (user_id,)
+        )
+        conn.commit()
+
+        await update.message.reply_text("🗑️ All reminders removed")
+        return
+
+    company = context.args[0]
+    role = " ".join(context.args[1:])
+
+    cursor.execute("""
+        DELETE FROM applied_jobs
+        WHERE user_id = ?
+          AND LOWER(company) = LOWER(?)
+          AND LOWER(role) = LOWER(?)
+    """, (user_id, company, role))
+    conn.commit()
+
+    if cursor.rowcount == 0:
+        await update.message.reply_text(
+            "⚠️ No matching reminder found.\n"
+            "Tip: use /list_applied to see exact names."
+        )
+    else:
+        await update.message.reply_text(
+            f"🗑️ Reminder removed:\n{company} – {role}"
         )
 
-        await context.bot.send_message(chat_id=user_id, text=msg)
+async def list_applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
 
-# ==========================
-# JOB MATCHING (SIMPLE)
-# ==========================
+    cursor.execute("""
+        SELECT company, role, followup_after, link
+        FROM applied_jobs
+        WHERE user_id = ?
+        ORDER BY applied_at DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
 
-# Sample job pool (later we can fetch real jobs)
-JOBS = [
-    {
-        "title": "AWS DevOps Engineer",
-        "company": "ABC Tech",
-        "keywords": ["aws", "devops", "docker", "ci/cd"],
-        "link": "https://example.com/job1"
-    },
-    {
-        "title": "Cloud Engineer",
-        "company": "XYZ Cloud",
-        "keywords": ["aws", "cloud", "terraform"],
-        "link": "https://example.com/job2"
-    },
-    {
-        "title": "Automation Tester",
-        "company": "TestCorp",
-        "keywords": ["python", "automation", "testing"],
-        "link": "https://example.com/job3"
-    }
-]
+    if not rows:
+        await update.message.reply_text(
+            "📭 You have not added any applied jobs yet"
+        )
+        return
 
-def match_jobs(skills_text):
-    skills = [s.lower() for s in skills_text.split()]
-    matched = []
+    msg = "📄 Your applied jobs:\n\n"
+    for idx, (company, role, days, link) in enumerate(rows, start=1):
+        msg += (
+            f"{idx}️⃣ {company} – {role}\n"
+            f"⏰ Follow-up after {days} day(s)\n"
+        )
+        if link:
+            msg += f"🔗 {link}\n"
+        msg += "\n"
 
-    for job in JOBS:
-        score = sum(1 for k in job["keywords"] if k in skills)
-        if score > 0:
-            matched.append((score, job))
+    await update.message.reply_text(msg)
 
-    matched.sort(reverse=True, key=lambda x: x[0])
-    return matched
 
-import hashlib
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 Job Seeker Bot – Help\n\n"
 
-def get_job_id(job):
-    raw = f"{job['company']}|{job['title']}|{job['link']}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+        "🔔 JOB ALERTS\n"
+        "/start – Enable daily job alerts\n"
+        "/stop – Stop job alerts\n"
+        "/jobs – Get job links now\n\n"
 
+        "📘 MANUAL – HOW TO USE THE BOT\n\n"
+        "1️⃣ Set your role (one time):\n"
+        "/skills AWS DevOps Engineer\n\n"
+
+        "2️⃣ Set job preferences (optional):\n"
+        "/preferences location=bangalore exp=4-6 mode=hybrid\n\n"
+
+        "3️⃣ Get job links:\n"
+        "/jobs\n"
+        "👉 Click the link and apply manually\n\n"
+
+        "4️⃣ Save applied job for follow-up:\n"
+        "/applied Amazon DevOps Engineer days=7 link=https://job-link\n\n"
+
+        "5️⃣ View applied jobs:\n"
+        "/list_applied\n\n"
+
+        "6️⃣ Check follow-ups:\n"
+        "/followups\n\n"
+
+        "7️⃣ Remove reminder if needed:\n"
+        "/remove_applied Amazon DevOps Engineer\n"
+        "/remove_applied all\n\n"
+
+        "8️⃣ Pause / resume alerts:\n"
+        "/stop\n"
+        "/start\n\n"
+
+        "✅ Tip: The bot never auto-applies. You stay in control."
+
+        "ℹ️ OTHER\n"
+        "/help – Show this help message"
+    )
+
+def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
+    if not skills:
+        return None
+    keyword = skills.lower().replace(" ", "-")
+    url = f"https://www.naukri.com/{keyword}-jobs-in-{location}"
+
+    params = [f"experience={exp_min}-{exp_max}"]
+
+    if work_mode:
+        params.append(f"wfhType={work_mode}")
+
+    return url + "?" + "&".join(params)
 
 # ==========================
 # MAIN APP
@@ -460,14 +563,24 @@ def main():
     app.add_handler(CommandHandler("applied", applied))
     app.add_handler(CommandHandler("followups", followups))
     app.add_handler(CommandHandler("followupmsg", followupmsg))
-    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("update_skill", update_skill))
+    app.add_handler(CommandHandler("preferences", preferences))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("hep", help_cmd))
+    app.add_handler(CommandHandler("remove_applied", remove_applied))
+    app.add_handler(CommandHandler("list_applied", list_applied))
 
-    app.job_queue.run_daily(daily_jobs, time=time(hour=9))
+
+
+    # app.job_queue.run_daily(daily_jobs, time=time(hour=9))
+    app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
     app.job_queue.run_daily(daily_followup, time=time(hour=9))
-    app.job_queue.run_daily(weekly_summary,time=time(hour=10),days=(6,)   # Sunday
-)
-
+    # app.job_queue.run_daily(
+    # weekly_summary,
+    # time=time(hour=10),
+    # days=(6,)
+    # )
 
     print("🤖 Job Seeker Bot (PROD) running")
     app.run_polling(stop_signals=None)
