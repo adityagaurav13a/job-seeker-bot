@@ -490,6 +490,48 @@ async def list_applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg)
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute("""
+        SELECT skills, location, exp_min, exp_max, work_mode, active
+        FROM user_skills
+        WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text(
+            "❌ No profile found.\nUse /start and /skills first."
+        )
+        return
+
+    skills, location, exp_min, exp_max, work_mode, active = row
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM applied_jobs WHERE user_id = ?",
+        (user_id,)
+    )
+    applied_count = cursor.fetchone()[0]
+
+    now = datetime.now(timezone.utc)
+    cursor.execute("""
+        SELECT COUNT(*) FROM applied_jobs
+        WHERE user_id = ?
+          AND (? - julianday(applied_at)) * 1 >= followup_after
+    """, (user_id, now.isoformat()))
+    due_count = cursor.fetchone()[0]
+
+    await update.message.reply_text(
+        "📊 Your Job Bot Status\n\n"
+        f"🔔 Alerts: {'ON' if active else 'OFF'}\n"
+        f"🔍 Role: {skills}\n\n"
+        f"📍 Location: {location}\n"
+        f"🧠 Experience: {exp_min}-{exp_max} yrs\n"
+        f"🏢 Work mode: {work_mode or 'Any'}\n\n"
+        f"📌 Applied jobs tracked: {applied_count}\n"
+        f"⏰ Follow-ups due today: {due_count}"
+    )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -531,6 +573,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Tip: The bot never auto-applies. You stay in control."
 
         "ℹ️ OTHER\n"
+        "/status – Show your current settings and reminders\n"
         "/help – Show this help message"
     )
 
@@ -551,38 +594,39 @@ def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
 # MAIN APP
 # ==========================
 def main():
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    job_queue = app.job_queue
 
+    # ------------------
+    # Command handlers
+    # ------------------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("skills", set_skills))
-    app.add_handler(CommandHandler("remind", remind))
-    app.add_handler(CommandHandler("hrmsg", hrmsg))
+    app.add_handler(CommandHandler("update_skill", update_skill))
+    app.add_handler(CommandHandler("preferences", preferences))
     app.add_handler(CommandHandler("jobs", jobs))
     app.add_handler(CommandHandler("applied", applied))
     app.add_handler(CommandHandler("followups", followups))
-    app.add_handler(CommandHandler("followupmsg", followupmsg))
-    app.add_handler(CommandHandler("update_skill", update_skill))
-    app.add_handler(CommandHandler("preferences", preferences))
+    app.add_handler(CommandHandler("remove_applied", remove_applied))
+    app.add_handler(CommandHandler("list_applied", list_applied))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("hep", help_cmd))
-    app.add_handler(CommandHandler("remove_applied", remove_applied))
-    app.add_handler(CommandHandler("list_applied", list_applied))
+    app.add_handler(CommandHandler("status", status))
 
+    # ------------------
+    # Scheduler logic
+    # ------------------
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        # CI/CD mode
+        app.job_queue.run_daily(daily_jobs, time=time(hour=9))
+        app.job_queue.run_daily(daily_followup, time=time(hour=9))
+    else:
+        # Local testing / always-on hosting
+        app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
+        app.job_queue.run_repeating(daily_followup, interval=300, first=20)
 
+    print("🤖 Job Seeker Bot running")
 
-    # app.job_queue.run_daily(daily_jobs, time=time(hour=9))
-    app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
-    app.job_queue.run_daily(daily_followup, time=time(hour=9))
-    # app.job_queue.run_daily(
-    # weekly_summary,
-    # time=time(hour=10),
-    # days=(6,)
-    # )
-
-    print("🤖 Job Seeker Bot (PROD) running")
     app.run_polling(stop_signals=None)
 
 if __name__ == "__main__":

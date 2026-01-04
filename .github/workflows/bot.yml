@@ -1,25 +1,34 @@
 name: Job Seeker Bot
 
 on:
-  schedule:
-    - cron: "30 3 * * *"   # 9:00 AM IST
+  # Manual trigger (recommended for safety)
   workflow_dispatch:
+
+  # Scheduled trigger (runs once daily at 9:00 AM IST)
+  schedule:
+    - cron: "30 3 * * *"   # 03:30 UTC = 09:00 IST
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 20
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
+          pip install --upgrade pip
           pip install "python-telegram-bot[job-queue]"
 
-      - name: Run bot
+      - name: Run Job Seeker Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
