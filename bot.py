@@ -494,10 +494,19 @@ async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = prefs.get("exp")
     mode = prefs.get("mode")
 
-    if exp and "-" in exp:
-        exp_min, exp_max = exp.split("-", 1)
-    else:
-        exp_min = exp_max = None
+    exp_min = None
+
+    if exp:
+        if "-" in exp:
+            exp_min = exp.split("-", 1)[0].strip()
+        else:
+            exp_min = exp.strip()
+
+    if exp_min and not exp_min.isdigit():
+        await update.message.reply_text(
+            "❌ Invalid experience.\nUse format: exp=4 or exp=4-6"
+        )
+        return
 
     if mode:
         if mode in ["remote"]:
@@ -710,7 +719,7 @@ def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
 
     return url + "?" + "&".join(params)
 
-def build_naukri_url(role, location=None, exp_min=None, exp_max=None, mode=None):
+def build_naukri_url(role, location=None, exp_min=None, work_mode=None):
     base = "https://www.naukri.com"
     role_slug = role.lower().replace(" ", "-")
 
@@ -720,15 +729,19 @@ def build_naukri_url(role, location=None, exp_min=None, exp_max=None, mode=None)
 
     params = []
 
-    if exp_min and exp_max:
-        params.append(f"experience={exp_min}-{exp_max}")
+    # Experience: only min years
+    if exp_min:
+        params.append(f"experience={exp_min}")
 
-    if mode == "remote":
-        params.append("wfhType=remote")
-    elif mode == "hybrid":
-        params.append("wfhType=hybrid")
-    elif mode == "office":
-        params.append("wfhType=office")
+    # Work mode mapping
+    mode_map = {
+        "remote": "1",
+        "office": "2",
+        "hybrid": "3"
+    }
+
+    if work_mode in mode_map:
+        params.append(f"wfhType={mode_map[work_mode]}")
 
     if params:
         url += "?" + "&".join(params)
