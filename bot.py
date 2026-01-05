@@ -656,7 +656,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔔 JOB ALERTS\n"
         "/start – Enable daily job alerts\n"
         "/stop – Stop job alerts\n"
-        "/jobs – Get job links now\n\n"
+        "/jobs – Get job links now\n"
+        "/refresh_jobs – Check if any new opening is available\n\n"
 
         "📘 MANUAL – HOW TO USE THE BOT\n\n"
         "1️⃣ Set your role (one time):\n"
@@ -688,11 +689,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop\n"
         "/start\n\n"
 
-        "✅ Tip: The bot never auto-applies. You stay in control."
-
         "ℹ️ OTHER\n"
         "/status – Show your current settings and reminders\n"
-        "/help – Show this help message"
+        "/help – Show this help message\n\n"
+
+        "✅ Tip: The bot never auto-applies. You stay in control."
+
     )
 
 def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
