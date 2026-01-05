@@ -106,9 +106,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
 
     await update.message.reply_text(
-        "✅ Job notifications enabled.\n"
-        "Use /skills to set your role."
+    "👋 Welcome to Job Seeker Bot!\n\n"
     )
+    await help_cmd(update, context)
 
 async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
