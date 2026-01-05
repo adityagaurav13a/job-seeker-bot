@@ -112,35 +112,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text(
-            "❌ Usage:\n/skills AWS DevOps Engineer"
+        # If no args → show current skills
+        cursor.execute(
+            "SELECT skills FROM user_skills WHERE user_id = ?",
+            (update.effective_user.id,)
         )
+        row = cursor.fetchone()
+
+        if not row or not row[0]:
+            await update.message.reply_text(
+                "❌ No skills set yet.\n"
+                "Usage:\n/skills aws,docker,python"
+            )
+        else:
+            await update.message.reply_text(
+                f"🧠 Your current skills:\n✅ {row[0]}"
+            )
         return
 
-    skills = " ".join(context.args)
+    # Parse comma-separated skills
+    raw = " ".join(context.args)
+    skills_list = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    skills = ", ".join(skills_list)
+
     user_id = update.effective_user.id
 
-    cursor.execute(
-        "SELECT skills FROM user_skills WHERE user_id = ?",
-        (user_id,)
-    )
-    existing = cursor.fetchone()
-
-    if existing:
-        await update.message.reply_text(
-            "⚠️ Skills already set.\n"
-            "Use /update_skill <new skills>"
-        )
-        return
-
-    cursor.execute(
-        "INSERT INTO user_skills (user_id, skills, active) VALUES (?, ?, 1)",
-        (user_id, skills)
-    )
+    cursor.execute("""
+        INSERT INTO user_skills (user_id, skills, active)
+        VALUES (?, ?, 1)
+        ON CONFLICT(user_id)
+        DO UPDATE SET skills = excluded.skills
+    """, (user_id, skills))
     conn.commit()
 
     await update.message.reply_text(
-        f"✅ Skills saved:\n{skills}"
+        f"✅ Skills updated:\n{skills}"
     )
 
 async def my_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -484,7 +490,9 @@ async def update_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    skills = " ".join(context.args)
+    raw = " ".join(context.args)
+    skills_list = [s.strip().lower() for s in raw.split(",") if s.strip()]
+    skills = ", ".join(skills_list)
     user_id = update.effective_user.id
 
     cursor.execute(
