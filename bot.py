@@ -100,32 +100,55 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Usage: /skills AWS DevOps Docker")
-        return
-
-    user_id = update.effective_user.id
-
-    cursor.execute(
-        "SELECT skills FROM user_skills WHERE user_id = ? AND active = 1",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    if row and row[0]:
         await update.message.reply_text(
-            "⚠️ Skills already set.\n"
-            "Use /update_skill <new skills> to update."
+            "❌ Usage:\n/skills AWS DevOps Engineer"
         )
         return
 
-    skills_text = " ".join(context.args)
+    skills = " ".join(context.args)
+    user_id = update.effective_user.id
+
+    cursor.execute(
+        "SELECT skills FROM user_skills WHERE user_id = ?",
+        (user_id,)
+    )
+    existing = cursor.fetchone()
+
+    if existing:
+        await update.message.reply_text(
+            "⚠️ Skills already set.\n"
+            "Use /update_skill <new skills>"
+        )
+        return
+
     cursor.execute(
         "INSERT INTO user_skills (user_id, skills, active) VALUES (?, ?, 1)",
-        (user_id, skills_text)
+        (user_id, skills)
     )
     conn.commit()
 
-    await update.message.reply_text("✅ Skills saved permanently")
+    await update.message.reply_text(
+        f"✅ Skills saved:\n{skills}"
+    )
 
+async def my_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute(
+        "SELECT skills FROM user_skills WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text(
+            "❌ No skills set yet.\nUse /skills <role>"
+        )
+        return
+
+    await update.message.reply_text(
+        f"🧠 Your current role:\n✅ {row[0]}"
+    )
 
 async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -328,20 +351,28 @@ async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
 async def update_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "❌ Usage: /update_skill AWS DevOps Terraform"
+            "❌ Usage:\n/update_skill AWS DevOps Engineer"
         )
         return
 
+    skills = " ".join(context.args)
     user_id = update.effective_user.id
-    skills_text = " ".join(context.args)
 
     cursor.execute(
         "UPDATE user_skills SET skills = ? WHERE user_id = ?",
-        (skills_text, user_id)
+        (skills, user_id)
     )
     conn.commit()
 
-    await update.message.reply_text("✅ Skills updated successfully")
+    if cursor.rowcount == 0:
+        await update.message.reply_text(
+            "❌ No existing skills found.\nUse /skills first."
+        )
+        return
+
+    await update.message.reply_text(
+        f"🔄 Skills updated:\n✅ {skills}"
+    )
 
 # async def weekly_summary(context: ContextTypes.DEFAULT_TYPE):
 #     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
@@ -544,7 +575,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "📘 MANUAL – HOW TO USE THE BOT\n\n"
         "1️⃣ Set your role (one time):\n"
-        "/skills AWS DevOps Engineer\n\n"
+        "/skills AWS DevOps Engineer\n"
+        "/my_skills – View your current role\n"
+        "/update_skill AWS DevOps Cloud Engineer – Update your role\n\n"
 
         "2️⃣ Set job preferences (optional):\n"
         "/preferences location=bangalore exp=4-6 mode=hybrid\n\n"
@@ -602,6 +635,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("skills", set_skills))
     app.add_handler(CommandHandler("update_skill", update_skill))
+    app.add_handler(CommandHandler("my_skills", my_skills))
     app.add_handler(CommandHandler("preferences", preferences))
     app.add_handler(CommandHandler("jobs", jobs))
     app.add_handler(CommandHandler("applied", applied))
