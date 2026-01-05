@@ -420,32 +420,53 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    prefs = {k: v for k, v in (
-        arg.split("=") for arg in context.args if "=" in arg
-    )}
+    prefs = {}
+    for arg in context.args:
+        if "=" in arg:
+            k, v = arg.split("=", 1)
+            prefs[k.lower()] = v.lower()
 
-    location = prefs.get("location", "india").lower()
-    work_mode = prefs.get("mode")
-    exp = prefs.get("exp", "0-30")
+    location = prefs.get("location")
+    exp = prefs.get("exp")
+    mode = prefs.get("mode")
 
-    try:
-        exp_min, exp_max = map(int, exp.split("-"))
-    except ValueError:
-        await update.message.reply_text("❌ exp must be like 4-6")
-        return
+    if exp and "-" in exp:
+        exp_min, exp_max = exp.split("-", 1)
+    else:
+        exp_min = exp_max = None
+
+    if mode:
+        if mode in ["remote"]:
+            mode = "remote"
+        elif mode in ["hybrid"]:
+            mode = "hybrid"
+        elif mode in ["office", "wfo"]:
+            mode = "office"
+        else:
+            await update.message.reply_text(
+                "❌ Invalid mode.\n"
+                "Use one of: remote | hybrid | office"
+            )
+            return
 
     cursor.execute("""
         UPDATE user_skills
-        SET location=?, exp_min=?, exp_max=?, work_mode=?
-        WHERE user_id=?
-    """, (location, exp_min, exp_max, work_mode, user_id))
+        SET location = ?, exp_min = ?, exp_max = ?, work_mode = ?
+        WHERE user_id = ?
+    """, (location, exp_min, exp_max, mode, user_id))
     conn.commit()
 
+    if cursor.rowcount == 0:
+        await update.message.reply_text(
+            "❌ No profile found.\nUse /skills first."
+        )
+        return
+
     await update.message.reply_text(
-        f"✅ Preferences saved\n"
-        f"📍 Location: {location}\n"
-        f"🧠 Experience: {exp_min}-{exp_max}\n"
-        f"🏢 Mode: {work_mode or 'Any'}"
+        "✅ Preferences saved:\n"
+        f"📍 Location: {location or 'Any'}\n"
+        f"🧠 Experience: {exp or 'Any'}\n"
+        f"🏢 Mode: {mode or 'Any'}"
     )
 
 async def remove_applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
