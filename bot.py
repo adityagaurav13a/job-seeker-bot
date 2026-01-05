@@ -65,10 +65,18 @@ conn.commit()
 # conn.commit()
 cursor.execute("PRAGMA table_info(user_skills)")
 columns = [c[1] for c in cursor.fetchall()]
-if "active" not in columns:
-    cursor.execute("ALTER TABLE user_skills ADD COLUMN active INTEGER DEFAULT 1")
-    conn.commit()
 
+if "active" not in columns:
+    cursor.execute(
+        "ALTER TABLE user_skills ADD COLUMN active INTEGER DEFAULT 1"
+    )
+
+if "last_job_url" not in columns:
+    cursor.execute(
+        "ALTER TABLE user_skills ADD COLUMN last_job_url TEXT"
+    )
+
+conn.commit()
 
 # ==========================
 # CONFIG
@@ -186,18 +194,55 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     cursor.execute("""
-        SELECT skills, location, exp_min, exp_max, work_mode
-        FROM user_skills WHERE user_id = ?
+        SELECT skills, location, exp_min, exp_max, work_mode, last_job_url, active
+        FROM user_skills
+        WHERE user_id = ?
     """, (user_id,))
     row = cursor.fetchone()
 
     if not row:
-        await update.message.reply_text("❌ Set skills first using /skills")
+        await update.message.reply_text(
+            "❌ Profile not set.\nUse /skills and /preferences first."
+        )
         return
 
-    skills, location, exp_min, exp_max, work_mode = row
-    link = naukri_search_url(skills, location, exp_min, exp_max, work_mode)
-    await update.message.reply_text(f"🔍 Jobs for you:\n{link}")
+    skills, location, exp_min, exp_max, mode, last_url, active = row
+
+    if not active:
+        await update.message.reply_text(
+            "⏸ Job alerts are stopped.\nUse /start to resume."
+        )
+        return
+
+    url = build_naukri_url(
+        role=skills,
+        location=location,
+        exp_min=exp_min,
+        exp_max=exp_max,
+        mode=mode
+    )
+
+    # Anti-spam: same URL → no new openings
+    if last_url == url:
+        await update.message.reply_text(
+            "ℹ️ No new openings yet.\nTry again later."
+        )
+        return
+
+    cursor.execute(
+        "UPDATE user_skills SET last_job_url = ? WHERE user_id = ?",
+        (url, user_id)
+    )
+    conn.commit()
+
+    await update.message.reply_text(
+        "🔥 New jobs matching your profile\n\n"
+        f"🔍 {skills}\n"
+        f"📍 {location or 'Any'} | 🧠 {exp_min}-{exp_max if exp_max else ''} yrs | "
+        f"🏢 {mode or 'Any'}\n\n"
+        f"👉 {url}\n\n"
+        "Tip: Apply to 3–5 jobs today"
+    )
 
 async def applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
@@ -644,6 +689,31 @@ def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
 
     return url + "?" + "&".join(params)
 
+def build_naukri_url(role, location=None, exp_min=None, exp_max=None, mode=None):
+    base = "https://www.naukri.com"
+    role_slug = role.lower().replace(" ", "-")
+
+    url = f"{base}/{role_slug}-jobs"
+    if location:
+        url += f"-in-{location.lower()}"
+
+    params = []
+
+    if exp_min and exp_max:
+        params.append(f"experience={exp_min}-{exp_max}")
+
+    if mode == "remote":
+        params.append("wfhType=remote")
+    elif mode == "hybrid":
+        params.append("wfhType=hybrid")
+    elif mode == "office":
+        params.append("wfhType=office")
+
+    if params:
+        url += "?" + "&".join(params)
+
+    return url
+
 # ==========================
 # MAIN APP
 # ==========================
@@ -672,13 +742,15 @@ def main():
     # Scheduler logic
     # ------------------
     if os.getenv("GITHUB_ACTIONS") == "true":
-        # CI/CD mode
+    # CI/CD sender mode
         app.job_queue.run_daily(daily_jobs, time=time(hour=9))
-        app.job_queue.run_daily(daily_followup, time=time(hour=9))
+        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30))
     else:
-        # Local testing / always-on hosting
-        app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
-        app.job_queue.run_repeating(daily_followup, interval=300, first=20)
+        # Always-on hosting (Railway)
+        app.job_queue.run_daily(daily_jobs, time=time(hour=9))
+        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30))
+        # app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
+        # app.job_queue.run_repeating(daily_followup, interval=300, first=20)
 
     print("🤖 Job Seeker Bot running")
 
