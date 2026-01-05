@@ -7,7 +7,10 @@ from telegram.ext import (
 
 import os
 from datetime import datetime, timedelta, timezone, time
+from pytz import timezone
 import sqlite3
+
+IST = timezone("Asia/Kolkata")
 
 # ========================
 # applied_jobs table
@@ -225,7 +228,8 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Anti-spam: same URL → no new openings
     if last_url == url:
         await update.message.reply_text(
-            "ℹ️ No new openings yet.\nTry again later."
+            "ℹ️ No new openings found based on your current filters.\n"
+            "Try changing preferences or check again tomorrow."
         )
         return
 
@@ -243,6 +247,21 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👉 {url}\n\n"
         "Tip: Apply to 3–5 jobs today"
     )
+
+async def refresh_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute(
+        "UPDATE user_skills SET last_job_url = NULL WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+
+    await update.message.reply_text(
+        "🔄 Job cache cleared.\nFetching latest openings…"
+    )
+
+    await jobs(update, context)
 
 async def applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
@@ -729,6 +748,7 @@ def main():
     app.add_handler(CommandHandler("my_skills", my_skills))
     app.add_handler(CommandHandler("preferences", preferences))
     app.add_handler(CommandHandler("jobs", jobs))
+    app.add_handler(CommandHandler("refresh_jobs", refresh_jobs))
     app.add_handler(CommandHandler("applied", applied))
     app.add_handler(CommandHandler("followups", followups))
     app.add_handler(CommandHandler("remove_applied", remove_applied))
@@ -743,12 +763,16 @@ def main():
     # ------------------
     if os.getenv("GITHUB_ACTIONS") == "true":
     # CI/CD sender mode
-        app.job_queue.run_daily(daily_jobs, time=time(hour=9))
-        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30))
+        app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
+        app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
+        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
+        app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
     else:
         # Always-on hosting (Railway)
-        app.job_queue.run_daily(daily_jobs, time=time(hour=9))
-        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30))
+        app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
+        app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
+        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
+        app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
         # app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
         # app.job_queue.run_repeating(daily_followup, interval=300, first=20)
 
