@@ -1,3 +1,4 @@
+import pytz
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -6,11 +7,11 @@ from telegram.ext import (
 )
 
 import os
-from datetime import datetime, timedelta, timezone, time
-from pytz import timezone
+from datetime import datetime, timedelta, time, timezone
+import pytz
 import sqlite3
 
-IST = timezone("Asia/Kolkata")
+IST = pytz.timezone("Asia/Kolkata")
 
 # ========================
 # applied_jobs table
@@ -242,7 +243,7 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔥 New jobs matching your profile\n\n"
         f"🔍 {skills}\n"
-        f"📍 {location or 'Any'} | 🧠 {exp_min}-{exp_max if exp_max else ''} yrs | "
+        f"🧠 {exp_min}+ yrs | "
         f"🏢 {mode or 'Any'}\n\n"
         f"👉 {url}\n\n"
         "Tip: Apply to 3–5 jobs today"
@@ -314,6 +315,57 @@ async def applied(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏰ Follow-up in {days} day(s)"
         + (f"\n🔗 {link}" if link else "")
     )
+
+async def any_new_opening(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    cursor.execute("""
+        SELECT skills, location, exp_min, work_mode, last_job_url, active
+        FROM user_skills WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text(
+            "❌ Profile not found.\nUse /skills first."
+        )
+        return
+
+    skills, location, exp_min, mode, last_url, active = row
+
+    if not active:
+        await update.message.reply_text(
+            "⏸ Job alerts are stopped.\nUse /start to resume."
+        )
+        return
+
+    link = build_naukri_url(
+        role=skills,
+        location=location,
+        exp_min=exp_min,
+        work_mode=mode
+    )
+
+    if last_url == link:
+        await update.message.reply_text(
+            "ℹ️ No new openings yet.\nTry again later."
+        )
+        return
+
+    # Save new URL
+    cursor.execute(
+        "UPDATE user_skills SET last_job_url = ? WHERE user_id = ?",
+        (link, user_id)
+    )
+    conn.commit()
+
+    await update.message.reply_text(
+        "🔥 New opening found!\n\n"
+        f"🔍 {skills}\n"
+        f"📍 {location or 'Any'} | 🧠 {exp_min or 'Any'}+ yrs | 🏢 {mode or 'Any'}\n\n"
+        f"👉 {link}"
+    )
+
 
 async def followups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -390,27 +442,44 @@ async def daily_followup(context: ContextTypes.DEFAULT_TYPE):
 
 async def daily_jobs(context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("""
-        SELECT user_id, skills, location, exp_min, exp_max, work_mode
+        SELECT user_id, skills, location, exp_min, work_mode, last_job_url
         FROM user_skills
         WHERE active = 1
     """)
     users = cursor.fetchall()
 
-    for user_id, skills, location, exp_min, exp_max, work_mode in users:
-        link = naukri_search_url(skills, location, exp_min, exp_max, work_mode)
+    for user_id, skills, location, exp_min, work_mode, last_url in users:
+
+        link = build_naukri_url(
+            role=skills,
+            location=location,
+            exp_min=exp_min,
+            work_mode=work_mode
+        )
+
+        # 🔁 Anti-spam: skip if same URL already sent
+        if last_url == link:
+            continue
 
         await context.bot.send_message(
             chat_id=user_id,
             text=(
                 "🔥 New jobs matching your profile\n\n"
                 f"🔍 Role: {skills}\n"
-                f"📍 Location: {location}\n"
-                f"🧠 Experience: {exp_min}-{exp_max} yrs\n"
+                f"📍 Location: {location or 'Any'}\n"
+                f"🧠 Experience: {exp_min}+ yrs\n"
                 f"🏢 Mode: {work_mode or 'Any'}\n\n"
                 f"👉 {link}\n\n"
                 "Tip: Apply to 3–5 jobs today"
             )
         )
+
+        # ✅ Save last sent job URL (anti-spam)
+        cursor.execute(
+            "UPDATE user_skills SET last_job_url = ? WHERE user_id = ?",
+            (link, user_id)
+        )
+        conn.commit()
 
 async def update_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -484,6 +553,12 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Usage:\n/preferences location=bangalore exp=4-6 mode=hybrid"
+        )
+        return
+
     prefs = {}
     for arg in context.args:
         if "=" in arg:
@@ -494,13 +569,14 @@ async def preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = prefs.get("exp")
     mode = prefs.get("mode")
 
-    exp_min = None
+    exp_min = exp_max = None
 
     if exp:
         if "-" in exp:
-            exp_min = exp.split("-", 1)[0].strip()
+            exp_min, exp_max = exp.split("-", 1)
         else:
-            exp_min = exp.strip()
+            exp_min = exp
+            exp_max = exp
 
     if exp_min and not exp_min.isdigit():
         await update.message.reply_text(
@@ -640,19 +716,29 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     applied_count = cursor.fetchone()[0]
 
     now = datetime.now(timezone.utc)
+    due_count = 0
+
     cursor.execute("""
-        SELECT COUNT(*) FROM applied_jobs
+        SELECT applied_at, followup_after
+        FROM applied_jobs
         WHERE user_id = ?
-          AND (? - julianday(applied_at)) * 1 >= followup_after
-    """, (user_id, now.isoformat()))
-    due_count = cursor.fetchone()[0]
+    """, (user_id,))
+    rows = cursor.fetchall()
+
+    for applied_at, days in rows:
+        t = datetime.fromisoformat(applied_at)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        if now - t >= timedelta(days=days):
+            due_count += 1
+
 
     await update.message.reply_text(
         "📊 Your Job Bot Status\n\n"
         f"🔔 Alerts: {'ON' if active else 'OFF'}\n"
         f"🔍 Role: {skills}\n\n"
         f"📍 Location: {location}\n"
-        f"🧠 Experience: {exp_min}-{exp_max} yrs\n"
+        f"🧠 Experience: {exp_min}+ yrs\n"
         f"🏢 Work mode: {work_mode or 'Any'}\n\n"
         f"📌 Applied jobs tracked: {applied_count}\n"
         f"⏰ Follow-ups due today: {due_count}"
@@ -681,6 +767,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/jobs\n"
         "👉 Click the link and apply manually\n\n"
 
+        "/any_new_opening – Check if new jobs are available now\n\n"
+
         "4️⃣ Save applied job for follow-up:\n"
         "/applied Amazon DevOps Engineer days=7 link=https://job-link\n\n"
 
@@ -705,19 +793,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Tip: The bot never auto-applies. You stay in control."
 
     )
-
-def naukri_search_url(skills, location, exp_min, exp_max, work_mode=None):
-    if not skills:
-        return None
-    keyword = skills.lower().replace(" ", "-")
-    url = f"https://www.naukri.com/{keyword}-jobs-in-{location}"
-
-    params = [f"experience={exp_min}-{exp_max}"]
-
-    if work_mode:
-        params.append(f"wfhType={work_mode}")
-
-    return url + "?" + "&".join(params)
 
 def build_naukri_url(role, location=None, exp_min=None, work_mode=None):
     base = "https://www.naukri.com"
@@ -772,22 +847,17 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("hep", help_cmd))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("any_new_opening", any_new_opening))
+
 
     # ------------------
     # Scheduler logic
     # ------------------
-    if os.getenv("GITHUB_ACTIONS") == "true":
-    # CI/CD sender mode
-        app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
-        app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
-        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
-        app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
-    else:
-        # Always-on hosting (Railway)
-        app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
-        app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
-        app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
-        app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
+    # Always-on hosting (Railway)
+    app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
+    app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
+    app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
+    app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
         # app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
         # app.job_queue.run_repeating(daily_followup, interval=300, first=20)
 
