@@ -198,7 +198,7 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     cursor.execute("""
-        SELECT skills, location, exp_min, exp_max, work_mode, last_job_url, active
+        SELECT skills, location, exp_min, work_mode, last_job_url, active
         FROM user_skills
         WHERE user_id = ?
     """, (user_id,))
@@ -206,11 +206,11 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not row:
         await update.message.reply_text(
-            "❌ Profile not set.\nUse /skills and /preferences first."
+            "❌ Profile not found.\nUse /skills to set your role first."
         )
         return
 
-    skills, location, exp_min, exp_max, mode, last_url, active = row
+    skills, location, exp_min, work_mode, last_url, active = row
 
     if not active:
         await update.message.reply_text(
@@ -218,35 +218,31 @@ async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    url = build_naukri_url(
+    link = build_naukri_url(
         role=skills,
         location=location,
         exp_min=exp_min,
-        exp_max=exp_max,
-        mode=mode
+        work_mode=work_mode
     )
 
-    # Anti-spam: same URL → no new openings
-    if last_url == url:
+    if last_url == link:
         await update.message.reply_text(
-            "ℹ️ No new openings found based on your current filters.\n"
-            "Try changing preferences or check again tomorrow."
+            "ℹ️ No new openings yet.\nTry again later."
         )
         return
 
+    # Save URL so next time it won’t spam
     cursor.execute(
         "UPDATE user_skills SET last_job_url = ? WHERE user_id = ?",
-        (url, user_id)
+        (link, user_id)
     )
     conn.commit()
 
     await update.message.reply_text(
-        "🔥 New jobs matching your profile\n\n"
+        "🔥 Jobs matching your profile\n\n"
         f"🔍 {skills}\n"
-        f"🧠 {exp_min}+ yrs | "
-        f"🏢 {mode or 'Any'}\n\n"
-        f"👉 {url}\n\n"
-        "Tip: Apply to 3–5 jobs today"
+        f"📍 {location or 'Any'} | 🧠 {exp_min or 'Any'}+ yrs | 🏢 {work_mode or 'Any'}\n\n"
+        f"👉 {link}"
     )
 
 async def refresh_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
