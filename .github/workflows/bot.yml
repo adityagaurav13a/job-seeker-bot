@@ -19,8 +19,8 @@ jobs:
 
       - name: Build & Push Image
         run: |
-          docker build -t yourdockerhub/job-seeker-bot:latest .
-          docker push yourdockerhub/job-seeker-bot:latest
+          docker build -t aditygau/job-seeker-bot:latest .
+          docker push aditygau/job-seeker-bot:latest
 
       - name: Set kubeconfig
         run: |
