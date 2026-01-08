@@ -1,0 +1,6 @@
+jobs.db
+*.db
+minikube*
+__pycache__/
+.env
+

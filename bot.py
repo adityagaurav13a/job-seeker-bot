@@ -11,13 +11,16 @@ from datetime import datetime, timedelta, time, timezone
 import pytz
 import sqlite3
 
+import logging
+logging.basicConfig(level=logging.INFO)
+
 IST = pytz.timezone("Asia/Kolkata")
 
 # ========================
 # applied_jobs table
 # ========================
 
-conn = sqlite3.connect("jobs.db", check_same_thread=False)
+conn = sqlite3.connect("/data/jobs.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""

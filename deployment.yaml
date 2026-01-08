@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-seeker-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-seeker-bot
+  template:
+    metadata:
+      labels:
+        app: job-seeker-bot
+    spec:
+      containers:
+        - name: bot
+          image: aditygau/job-seeker-bot:latest
+          env:
+            - name: BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bot-secrets
+                  key: BOT_TOKEN
+          volumeMounts:
+            - name: db-volume
+              mountPath: /data
+      volumes:
+        - name: db-volume
+          persistentVolumeClaim:
+            claimName: job-seeker-db
