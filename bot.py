@@ -12,7 +12,11 @@ import pytz
 import sqlite3
 
 import logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "1683148040"))
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -22,6 +26,10 @@ IST = pytz.timezone("Asia/Kolkata")
 
 conn = sqlite3.connect("/data/jobs.db", check_same_thread=False)
 cursor = conn.cursor()
+cursor.execute("PRAGMA journal_mode=WAL;")
+cursor.execute("PRAGMA synchronous=NORMAL;")
+conn.commit()
+
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS applied_jobs (
@@ -751,6 +759,90 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏰ Follow-ups due today: {due_count}"
     )
 
+async def send_alert(context, message: str):
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"🚨 *BOT ALERT*\n\n{message}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Failed to send alert: {e}")
+
+async def bot_heartbeat(context):
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_health (
+                id INTEGER PRIMARY KEY,
+                last_heartbeat TEXT
+            )
+        """)
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        cursor.execute("""
+            INSERT INTO bot_health (id, last_heartbeat)
+            VALUES (1, ?)
+            ON CONFLICT(id) DO UPDATE SET last_heartbeat = excluded.last_heartbeat
+        """, (now,))
+        conn.commit()
+
+        logging.info("Bot heartbeat OK")
+
+    except Exception as e:
+        logging.error("Heartbeat failed", exc_info=True)
+        await send_alert(context, f"Heartbeat failed:\n{e}")
+
+async def monitored_daily_jobs(context):
+    try:
+        logging.info("Daily jobs started")
+        await daily_jobs(context)
+        logging.info("Daily jobs finished")
+    except Exception as e:
+        logging.error("Daily jobs failed", exc_info=True)
+        await send_alert(context, f"Daily jobs failed:\n{e}")
+
+async def monitored_daily_followup(context):
+    try:
+        logging.info("Daily followups started")
+        await daily_followup(context)
+        logging.info("Daily followups finished")
+    except Exception as e:
+        logging.error("Daily followups failed", exc_info=True)
+        await send_alert(context, f"Daily followups failed:\n{e}")
+
+async def startup_marker(context):
+    logging.info("Bot startup recorded")
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS crash_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT
+            )
+        """)
+
+        cursor.execute(
+            "INSERT INTO crash_log (occurred_at) VALUES (?)",
+            (datetime.now(timezone.utc).isoformat(),)
+        )
+        conn.commit()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM crash_log
+            WHERE occurred_at >= datetime('now', '-10 minutes')
+        """)
+        crashes = cursor.fetchone()[0]
+
+        if crashes >= 3:
+            await send_alert(
+                context,
+                f"Bot restarted {crashes} times in last 10 minutes"
+            )
+
+    except Exception as e:
+        logging.error("Crash detector failed", exc_info=True)
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Job Seeker Bot – Help\n\n"
@@ -856,19 +948,28 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("any_new_opening", any_new_opening))
 
+    # Heartbeat every 5 minutes
+    app.job_queue.run_repeating(bot_heartbeat, interval=300, first=60)
 
-    # ------------------
-    # Scheduler logic
-    # ------------------
-    # Always-on hosting (Railway)
-    app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
-    app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
-    app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
-    app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
-        # app.job_queue.run_repeating(daily_jobs, interval=120, first=10)
-        # app.job_queue.run_repeating(daily_followup, interval=300, first=20)
+    # Crash detector on startup
+    app.job_queue.run_once(startup_marker, when=5)
 
-    print("🤖 Job Seeker Bot running")
+
+    # Replace daily_jobs with monitored version
+    # Jobs
+    app.job_queue.run_daily(monitored_daily_jobs, time=time(hour=9, tzinfo=IST))
+    app.job_queue.run_daily(monitored_daily_jobs, time=time(hour=14, tzinfo=IST))
+
+    # Follow-ups
+    app.job_queue.run_daily(monitored_daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
+    app.job_queue.run_daily(monitored_daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
+
+    # app.job_queue.run_daily(daily_jobs, time=time(hour=9, tzinfo=IST))
+    # app.job_queue.run_daily(daily_jobs, time=time(hour=14, tzinfo=IST))
+    # app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
+    # app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
+
+    logging.info("🤖 Job Seeker Bot running")
 
     app.run_polling(stop_signals=None)
 
