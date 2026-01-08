@@ -21,13 +21,3 @@ jobs:
         run: |
           docker build -t aditygau/job-seeker-bot:latest .
           docker push aditygau/job-seeker-bot:latest
-
-      - name: Set kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
-
-      - name: Deploy to Kubernetes
-        run: |
-          kubectl apply -f deployment.yaml
-          kubectl rollout restart deployment job-seeker-bot
