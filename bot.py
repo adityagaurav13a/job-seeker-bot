@@ -5,13 +5,20 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes
 )
-
+from metrics import (
+    MESSAGES_TOTAL,
+    ERRORS_TOTAL,
+    MESSAGE_LATENCY,
+    start_metrics_server
+)
+from telegram.ext import MessageHandler, filters
 import os
 from datetime import datetime, timedelta, time, timezone
 import pytz
 import sqlite3
-
 import logging
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -842,6 +849,8 @@ async def startup_marker(context):
     except Exception as e:
         logging.error("Crash detector failed", exc_info=True)
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Use /help to see commands")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -969,6 +978,9 @@ def main():
     # app.job_queue.run_daily(daily_followup, time=time(hour=9, minute=30, tzinfo=IST))
     # app.job_queue.run_daily(daily_followup, time=time(hour=14, minute=30, tzinfo=IST))
 
+    start_metrics_server()  # starts /metrics on :8000
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     logging.info("🤖 Job Seeker Bot running")
 
     app.run_polling(stop_signals=None)

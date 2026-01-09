@@ -1,30 +1,36 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: job-seeker-bot
+  name: telegram-bot
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: job-seeker-bot
+      app: telegram-bot
   template:
     metadata:
       labels:
-        app: job-seeker-bot
+        app: telegram-bot
     spec:
       containers:
-        - name: bot
-          image: aditygau/job-seeker-bot:latest
-          env:
-            - name: BOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: bot-secrets
-                  key: BOT_TOKEN
-          volumeMounts:
-            - name: db-volume
-              mountPath: /data
+      - name: bot
+        image: aditygau/telegram-bot:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: telegram-secrets
+              key: BOT_TOKEN
+        - name: ADMIN_CHAT_ID
+          valueFrom:
+            secretKeyRef:
+              name: telegram-admin
+              key: ADMIN_CHAT_ID
+        volumeMounts:
+        - name: data
+          mountPath: /data
       volumes:
-        - name: db-volume
-          persistentVolumeClaim:
-            claimName: job-seeker-db
+      - name: data
+        emptyDir: {}
