@@ -7,7 +7,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -17,7 +16,39 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push Image
+      - name: Set image tag
+        run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Build & Push Docker Image
         run: |
-          docker build -t aditygau/job-seeker-bot:latest .
-          docker push aditygau/job-seeker-bot:latest
+          docker build -t aditygau/telegram-bot:$IMAGE_TAG .
+          docker push aditygau/telegram-bot:$IMAGE_TAG
+
+      - name: Deploy on EC2 via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Pull the new image
+            docker pull aditygau/telegram-bot:$IMAGE_TAG
+
+            # Stop current container (if running) with zero-downtime strategy
+            if docker ps -q --filter "name=telegram-bot"; then
+              docker rename telegram-bot telegram-bot-old
+            fi
+
+            # Run new container
+            docker run -d \
+              --name telegram-bot \
+              -p 8000:8000 \
+              -e BOT_TOKEN="${BOT_TOKEN}" \
+              -e ADMIN_CHAT_ID="${ADMIN_CHAT_ID}" \
+              -v /home/ec2-user/job-seeker-bot/data:/data \
+              aditygau/telegram-bot:$IMAGE_TAG
+
+            # Remove old container after new one is up
+            if docker ps -a --filter "name=telegram-bot-old"; then
+              docker rm -f telegram-bot-old
+            fi

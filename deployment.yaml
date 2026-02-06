@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: bot
-        image: aditygau/telegram-bot:latest
+        image: aditygau/telegram-bot:{{IMAGE_TAG}} 
         ports:
         - containerPort: 8000
         env:
