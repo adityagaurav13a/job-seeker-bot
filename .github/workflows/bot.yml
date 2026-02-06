@@ -26,6 +26,10 @@ jobs:
 
       - name: Deploy on EC2 via SSH
         uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
@@ -43,8 +47,8 @@ jobs:
             docker run -d \
               --name telegram-bot \
               -p 8000:8000 \
-              -e BOT_TOKEN="${BOT_TOKEN}" \
-              -e ADMIN_CHAT_ID="${ADMIN_CHAT_ID}" \
+              -e BOT_TOKEN="$BOT_TOKEN" \
+              -e ADMIN_CHAT_ID="$ADMIN_CHAT_ID" \
               -v /home/ec2-user/job-seeker-bot/data:/data \
               aditygau/telegram-bot:$IMAGE_TAG
 
